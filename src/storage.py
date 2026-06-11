@@ -620,6 +620,43 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class User(Base):
+    """Login user account (multi-tenant).
+
+    Supports local (username + password) and Google OAuth login. Accounts are
+    created by an admin; there is no open self-registration. ``password_hash``
+    stores the ``salt_b64:hash_b64`` PBKDF2 string (see src/auth.py); it is
+    NULL for Google-only accounts. ``google_sub`` is the Google subject id used
+    to match an OAuth login back to a pre-created account.
+    """
+
+    __tablename__ = 'users'
+
+    id = Column(String(64), primary_key=True)  # uuid4 hex
+    username = Column(String(128), nullable=False, unique=True, index=True)
+    email = Column(String(255), nullable=True, unique=True, index=True)
+    password_hash = Column(String(255), nullable=True)  # "salt_b64:hash_b64" or NULL
+    auth_provider = Column(String(16), nullable=False, default='local')  # local/google/both
+    google_sub = Column(String(255), nullable=True, unique=True, index=True)
+    is_admin = Column(Boolean, nullable=False, default=False, index=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "email": self.email,
+            "auth_provider": self.auth_provider,
+            "has_password": bool(self.password_hash),
+            "google_linked": bool(self.google_sub),
+            "is_admin": bool(self.is_admin),
+            "is_active": bool(self.is_active),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class DatabaseManager:
     """
     数据库管理器 - 单例模式
@@ -743,7 +780,124 @@ class DatabaseManager:
             raise
         finally:
             session.close()
-    
+
+    # ==================================================================
+    # User accounts (multi-tenant login)
+    # ==================================================================
+
+    def count_users(self) -> int:
+        """Return total number of user accounts."""
+        with self.get_session() as session:
+            return int(session.execute(select(func.count(User.id))).scalar() or 0)
+
+    def create_user(
+        self,
+        username: str,
+        password_hash: Optional[str] = None,
+        email: Optional[str] = None,
+        is_admin: bool = False,
+        auth_provider: str = "local",
+        google_sub: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Create a user. Returns the user dict, or None if username/email taken."""
+        import uuid
+        user = User(
+            id=uuid.uuid4().hex,
+            username=username.strip(),
+            email=(email.strip() or None) if email else None,
+            password_hash=password_hash,
+            auth_provider=auth_provider,
+            google_sub=google_sub,
+            is_admin=is_admin,
+            is_active=True,
+        )
+        with self.session_scope() as session:
+            session.add(user)
+            try:
+                session.flush()
+            except IntegrityError:
+                session.rollback()
+                return None
+            return user.to_dict()
+
+    def _get_user_row(self, session: Session, user_id: str) -> Optional[User]:
+        return session.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        if not user_id:
+            return None
+        with self.get_session() as session:
+            row = self._get_user_row(session, user_id)
+            return row.to_dict() if row else None
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        if not username:
+            return None
+        with self.get_session() as session:
+            row = session.execute(
+                select(User).where(User.username == username.strip())
+            ).scalar_one_or_none()
+            return row.to_dict() if row else None
+
+    def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        if not email:
+            return None
+        with self.get_session() as session:
+            row = session.execute(
+                select(User).where(User.email == email.strip())
+            ).scalar_one_or_none()
+            return row.to_dict() if row else None
+
+    def get_user_by_google_sub(self, google_sub: str) -> Optional[Dict[str, Any]]:
+        if not google_sub:
+            return None
+        with self.get_session() as session:
+            row = session.execute(
+                select(User).where(User.google_sub == google_sub)
+            ).scalar_one_or_none()
+            return row.to_dict() if row else None
+
+    def get_user_password_hash(self, user_id: str) -> Optional[str]:
+        """Return the stored password hash string for a user (or None)."""
+        with self.get_session() as session:
+            row = self._get_user_row(session, user_id)
+            return row.password_hash if row else None
+
+    def list_users(self) -> List[Dict[str, Any]]:
+        with self.get_session() as session:
+            rows = session.execute(select(User).order_by(User.created_at.asc())).scalars().all()
+            return [r.to_dict() for r in rows]
+
+    def set_user_active(self, user_id: str, is_active: bool) -> bool:
+        with self.session_scope() as session:
+            row = self._get_user_row(session, user_id)
+            if not row:
+                return False
+            row.is_active = bool(is_active)
+            return True
+
+    def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        with self.session_scope() as session:
+            row = self._get_user_row(session, user_id)
+            if not row:
+                return False
+            row.password_hash = password_hash
+            if row.auth_provider == "google":
+                row.auth_provider = "both"
+            return True
+
+    def link_google_to_user(self, user_id: str, google_sub: str, email: Optional[str] = None) -> bool:
+        with self.session_scope() as session:
+            row = self._get_user_row(session, user_id)
+            if not row:
+                return False
+            row.google_sub = google_sub
+            if email and not row.email:
+                row.email = email.strip()
+            if row.auth_provider == "local":
+                row.auth_provider = "both"
+            return True
+
     def has_today_data(self, code: str, target_date: Optional[date] = None) -> bool:
         """
         检查是否已有指定日期的数据

@@ -49,6 +49,9 @@ class AuthApiTestCase(unittest.TestCase):
         os.environ["ENV_FILE"] = str(self.env_path)
         os.environ["DATABASE_PATH"] = str(self.data_dir / "test.db")
         Config.reset_instance()
+        # Fresh per-test DB so the users table starts empty.
+        from src.storage import DatabaseManager
+        DatabaseManager.reset_instance()
 
         self.auth_patcher = patch.object(auth, "_is_auth_enabled_from_env", return_value=True)
         self.data_dir_patcher = patch.object(auth, "_get_data_dir", return_value=self.data_dir)
@@ -59,6 +62,8 @@ class AuthApiTestCase(unittest.TestCase):
         self.auth_patcher.stop()
         self.data_dir_patcher.stop()
         Config.reset_instance()
+        from src.storage import DatabaseManager
+        DatabaseManager.reset_instance()
         os.environ.pop("ENV_FILE", None)
         os.environ.pop("DATABASE_PATH", None)
         self.temp_dir.cleanup()
@@ -154,11 +159,12 @@ class AuthApiTestCase(unittest.TestCase):
 
         response = asyncio.run(
             auth_endpoint.auth_change_password(
+                self._build_request(),
                 auth_endpoint.ChangePasswordRequest(
                     currentPassword="oldpass6",
                     newPassword="newpass6",
                     newPasswordConfirm="newpass6",
-                )
+                ),
             )
         )
         self.assertIn(response.status_code, (200, 204))
@@ -174,11 +180,12 @@ class AuthApiTestCase(unittest.TestCase):
 
         response = asyncio.run(
             auth_endpoint.auth_change_password(
+                self._build_request(),
                 auth_endpoint.ChangePasswordRequest(
                     currentPassword="wrong",
                     newPassword="new123",
                     newPasswordConfirm="new123",
-                )
+                ),
             )
         )
         self.assertEqual(response.status_code, 400)
