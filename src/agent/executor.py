@@ -367,7 +367,7 @@ class AgentExecutor:
 
         return self._run_loop(messages, tool_decls, parse_dashboard=True)
 
-    def chat(self, message: str, session_id: str, progress_callback: Optional[Callable] = None, context: Optional[Dict[str, Any]] = None) -> AgentResult:
+    def chat(self, message: str, session_id: str, progress_callback: Optional[Callable] = None, context: Optional[Dict[str, Any]] = None, user_id: Optional[str] = None) -> AgentResult:
         """Execute the agent loop for a free-form chat message.
 
         Args:
@@ -375,10 +375,14 @@ class AgentExecutor:
             session_id: The conversation session ID.
             progress_callback: Optional callback for streaming progress events.
             context: Optional context dict from previous analysis for data reuse.
+            user_id: Owner of the conversation (for per-user isolation). Falls
+                back to DEFAULT_USER_ID when unauthenticated.
 
         Returns:
             AgentResult with the text response.
         """
+        from src.storage import DEFAULT_USER_ID
+        user_id = user_id or DEFAULT_USER_ID
         from src.agent.conversation import conversation_manager
 
         # Build system prompt with skills
@@ -433,16 +437,16 @@ class AgentExecutor:
         messages.append({"role": "user", "content": message})
 
         # Persist the user turn immediately so the session appears in history during processing
-        conversation_manager.add_message(session_id, "user", message)
+        conversation_manager.add_message(session_id, "user", message, user_id=user_id)
 
         result = self._run_loop(messages, tool_decls, parse_dashboard=False, progress_callback=progress_callback)
 
         # Persist assistant reply (or error note) for context continuity
         if result.success:
-            conversation_manager.add_message(session_id, "assistant", result.content)
+            conversation_manager.add_message(session_id, "assistant", result.content, user_id=user_id)
         else:
             error_note = f"[分析失败] {result.error or '未知错误'}"
-            conversation_manager.add_message(session_id, "assistant", error_note)
+            conversation_manager.add_message(session_id, "assistant", error_note, user_id=user_id)
 
         return result
 
