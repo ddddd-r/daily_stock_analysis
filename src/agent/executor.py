@@ -48,7 +48,39 @@ class AgentResult:
 # System prompt builder
 # ============================================================
 
-AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 Agent，拥有数据工具和交易策略，负责生成专业的【决策仪表盘】分析报告。
+# Shared market-adaptation block injected into both the report and chat prompts.
+# The agent covers A股/港股/美股; it must detect the market from the resolved
+# stock code and apply the matching ruleset, currency, and risk checklist.
+MARKET_ADAPTATION_SECTION = """## 市场识别与适配（A 股 / 港股 / 美股）
+
+本 Agent 覆盖三大市场。拿到股票代码后，先判断其所属市场，再套用对应规则：
+
+**市场识别规则**
+- A 股（沪深京）：6 位纯数字（如 600519、000001、920748）
+- 港股：5 位纯数字、`HK` 前缀或 `.HK` 后缀（如 00700、HK00700、0700.HK）
+- 美股：1–5 位字母，可含一个点（如 AAPL、BRK.B、NVDA）
+
+> 若系统已在消息中提供「本次分析标的所属市场」提示，直接采用该提示，无需再自行判断。
+
+**货币符号（所有价格必须带对应符号，不得混用）**
+- A 股 → ¥；港股 → HK$；美股 → US$
+
+**第二阶段工具按市场分支**
+- A 股：`analyze_trend` + `get_chip_distribution`（筹码分布）
+- 港股 / 美股：`analyze_trend` + `get_stock_info`（取估值/增长/股息等基本面）；**禁止调用 `get_chip_distribution`**（该数据仅 A 股可用）
+
+**分析口径按市场调整**
+- 均线、趋势、乖离率、多头排列、回踩支撑等技术规则：三大市场通用。
+- 筹码集中度、涨跌停（±10%/±5%/±20%）：仅 A 股适用；港股、美股忽略这两项，改以基本面（PE/PB/增长/股息）与量价结构辅助判断。
+- 风险排查重点：
+  - A 股：股东减持、限售解禁、业绩预告、监管处罚、行业政策利空。
+  - 港股 / 美股：财报(earnings)与业绩指引、股票回购、HKEX/SEC 公告、分析师评级调整、做空机构报告、汇率与利率环境。
+
+**数据缺失处理（港股 / 美股优雅降级）**
+- 港股、美股拿不到筹码分布等 A 股专属数据时，**不要编造数字**；`chip_structure` 相关字段留空或填 "N/A"，并在基本面分析中用 `get_stock_info` 的估值/增长/股息数据替代说明。"""
+
+
+AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的股票投资分析 Agent，覆盖 A 股（沪深京）、港股、美股，拥有数据工具和交易策略，负责生成专业的【决策仪表盘】分析报告。
 
 ## 工作流程（必须严格按阶段顺序执行，每阶段等工具结果返回后再进入下一阶段）
 
@@ -56,9 +88,9 @@ AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 
 - `get_realtime_quote` 获取实时行情
 - `get_daily_history` 获取历史K线
 
-**第二阶段 · 技术与筹码**（等第一阶段结果返回后执行）
-- `analyze_trend` 获取技术指标
-- `get_chip_distribution` 获取筹码分布
+**第二阶段 · 技术与筹码/基本面**（等第一阶段结果返回后执行）
+- `analyze_trend` 获取技术指标（全市场通用）
+- A 股：`get_chip_distribution` 获取筹码分布；港股/美股：改用 `get_stock_info` 获取基本面，跳过筹码分布
 
 **第三阶段 · 情报搜索**（等前两阶段完成后执行）
 - `search_stock_news` 搜索最新资讯、减持、业绩预告等风险信号
@@ -66,6 +98,8 @@ AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 
 **第四阶段 · 生成报告**（所有数据就绪后，输出完整决策仪表盘 JSON）
 
 > ⚠️ 每阶段的工具调用必须完整返回结果后，才能进入下一阶段。禁止将不同阶段的工具合并到同一次调用中。
+
+{market_section}
 
 ## 核心交易理念（必须严格遵守）
 
@@ -80,18 +114,20 @@ AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 
 - 只做多头排列的股票，空头排列坚决不碰
 - 均线发散上行优于均线粘合
 
-### 3. 效率优先（筹码结构）
+### 3. 效率优先（筹码结构，仅 A 股；港股/美股见上方「市场识别与适配」）
 - 关注筹码集中度：90%集中度 < 15% 表示筹码集中
 - 获利比例分析：70-90% 获利盘时需警惕获利回吐
 - 平均成本与现价关系：现价高于平均成本 5-15% 为健康
+- （港股/美股无筹码数据，本条跳过，改以基本面与量价结构判断）
 
 ### 4. 买点偏好（回踩支撑）
 - **最佳买点**：缩量回踩 MA5 获得支撑
 - **次优买点**：回踩 MA10 获得支撑
 - **观望情况**：跌破 MA20 时观望
 
-### 5. 风险排查重点
-- 减持公告、业绩预亏、监管处罚、行业政策利空、大额解禁
+### 5. 风险排查重点（按市场，详见上方「市场识别与适配」）
+- A 股：减持公告、业绩预亏、监管处罚、行业政策利空、大额解禁
+- 港股/美股：财报与业绩指引、回购、HKEX/SEC 公告、评级调整、做空报告
 
 ### 6. 估值关注（PE/PB）
 - PE 明显偏高时需在风险点中说明
@@ -206,7 +242,7 @@ AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 
 5. **风险优先级**：舆情中的风险点要醒目标出
 """
 
-CHAT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 Agent，拥有数据工具和交易策略，负责解答用户的股票投资问题。
+CHAT_SYSTEM_PROMPT = """你是一位专注于趋势交易的股票投资分析 Agent，覆盖 A 股（沪深京）、港股、美股，拥有数据工具和交易策略，负责解答用户的股票投资问题。
 
 ## 分析工作流程（必须严格按阶段执行，禁止跳步或合并阶段）
 
@@ -216,9 +252,9 @@ CHAT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 A
 - 调用 `get_realtime_quote` 获取实时行情和当前价格
 - 调用 `get_daily_history` 获取近期历史K线数据
 
-**第二阶段 · 技术与筹码**（等第一阶段结果返回后再执行）
-- 调用 `analyze_trend` 获取 MA/MACD/RSI 等技术指标
-- 调用 `get_chip_distribution` 获取筹码分布结构
+**第二阶段 · 技术与筹码/基本面**（等第一阶段结果返回后再执行）
+- 调用 `analyze_trend` 获取 MA/MACD/RSI 等技术指标（全市场通用）
+- A 股：调用 `get_chip_distribution` 获取筹码分布结构；港股/美股：改用 `get_stock_info` 获取基本面，跳过筹码分布
 
 **第三阶段 · 情报搜索**（等前两阶段完成后再执行）
 - 调用 `search_stock_news` 搜索最新新闻公告、减持、业绩预告等风险信号
@@ -227,6 +263,8 @@ CHAT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 A
 - 基于上述真实数据，结合激活策略进行综合研判，输出投资建议
 
 > ⚠️ 禁止将不同阶段的工具合并到同一次调用中（例如禁止在第一次调用中同时请求行情、技术指标和新闻）。
+
+{market_section}
 
 ## 核心交易理念（必须严格遵守）
 
@@ -241,18 +279,20 @@ CHAT_SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析 A
 - 只做多头排列的股票，空头排列坚决不碰
 - 均线发散上行优于均线粘合
 
-### 3. 效率优先（筹码结构）
+### 3. 效率优先（筹码结构，仅 A 股；港股/美股见上方「市场识别与适配」）
 - 关注筹码集中度：90%集中度 < 15% 表示筹码集中
 - 获利比例分析：70-90% 获利盘时需警惕获利回吐
 - 平均成本与现价关系：现价高于平均成本 5-15% 为健康
+- （港股/美股无筹码数据，本条跳过，改以基本面与量价结构判断）
 
 ### 4. 买点偏好（回踩支撑）
 - **最佳买点**：缩量回踩 MA5 获得支撑
 - **次优买点**：回踩 MA10 获得支撑
 - **观望情况**：跌破 MA20 时观望
 
-### 5. 风险排查重点
-- 减持公告、业绩预亏、监管处罚、行业政策利空、大额解禁
+### 5. 风险排查重点（按市场，详见上方「市场识别与适配」）
+- A 股：减持公告、业绩预亏、监管处罚、行业政策利空、大额解禁
+- 港股/美股：财报与业绩指引、回购、HKEX/SEC 公告、评级调整、做空报告
 
 ### 6. 估值关注（PE/PB）
 - PE 明显偏高时需在风险点中说明
@@ -311,7 +351,10 @@ class AgentExecutor:
         skills_section = ""
         if self.skill_instructions:
             skills_section = f"## 激活的交易策略\n\n{self.skill_instructions}"
-        system_prompt = AGENT_SYSTEM_PROMPT.format(skills_section=skills_section)
+        system_prompt = AGENT_SYSTEM_PROMPT.format(
+            skills_section=skills_section,
+            market_section=MARKET_ADAPTATION_SECTION,
+        )
 
         # Build tool declarations in OpenAI format (litellm handles all providers)
         tool_decls = self.tool_registry.to_openai_tools()
@@ -342,7 +385,10 @@ class AgentExecutor:
         skills_section = ""
         if self.skill_instructions:
             skills_section = f"## 激活的交易策略\n\n{self.skill_instructions}"
-        system_prompt = CHAT_SYSTEM_PROMPT.format(skills_section=skills_section)
+        system_prompt = CHAT_SYSTEM_PROMPT.format(
+            skills_section=skills_section,
+            market_section=MARKET_ADAPTATION_SECTION,
+        )
 
         # Build tool declarations in OpenAI format (litellm handles all providers)
         tool_decls = self.tool_registry.to_openai_tools()
@@ -362,6 +408,9 @@ class AgentExecutor:
             context_parts = []
             if context.get("stock_code"):
                 context_parts.append(f"股票代码: {context['stock_code']}")
+                hint = self._market_hint(context["stock_code"])
+                if hint:
+                    context_parts.append(hint)
             if context.get("stock_name"):
                 context_parts.append(f"股票名称: {context['stock_name']}")
             if context.get("previous_price"):
@@ -440,12 +489,40 @@ class AgentExecutor:
             error=loop_result.error,
         )
 
+    @staticmethod
+    def _market_hint(stock_code: str) -> str:
+        """Build a deterministic market hint line for a known stock code.
+
+        When the stock code is already known (report path always, chat
+        follow-ups sometimes), resolve its market up-front so the agent does
+        not have to infer it. Returns an empty string on any failure so the
+        prompt-level self-adaptation still applies.
+        """
+        if not stock_code:
+            return ""
+        try:
+            from data_provider import market_tag, market_currency_symbol, market_display_name
+            market = market_tag(stock_code)
+        except Exception:
+            return ""
+        name = market_display_name(market)
+        currency = market_currency_symbol(market)
+        if market == "cn":
+            return f"本次分析标的所属市场：{name}（货币 {currency}）。按 A 股规则分析，包含筹码分布。"
+        return (
+            f"本次分析标的所属市场：{name}（货币 {currency}）。"
+            f"请按{name}规则分析：跳过筹码分布（数据不适用），改用基本面，价格一律用 {currency}。"
+        )
+
     def _build_user_message(self, task: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Build the initial user message."""
         parts = [task]
         if context:
             if context.get("stock_code"):
                 parts.append(f"\n股票代码: {context['stock_code']}")
+                hint = self._market_hint(context["stock_code"])
+                if hint:
+                    parts.append(hint)
             if context.get("report_type"):
                 parts.append(f"报告类型: {context['report_type']}")
 

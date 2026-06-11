@@ -164,6 +164,24 @@ def _market_tag(code: str) -> str:
     return "cn"
 
 
+# Public alias — `_market_tag` is the internal name; callers outside this module
+# (e.g. the agent layer) should import `market_tag`.
+market_tag = _market_tag
+
+_MARKET_CURRENCY_SYMBOLS = {"cn": "¥", "hk": "HK$", "us": "US$"}
+_MARKET_DISPLAY_NAMES = {"cn": "A股", "hk": "港股", "us": "美股"}
+
+
+def market_currency_symbol(market: str) -> str:
+    """Return the currency symbol for a market tag ('cn'/'hk'/'us')."""
+    return _MARKET_CURRENCY_SYMBOLS.get(market, "¥")
+
+
+def market_display_name(market: str) -> str:
+    """Return the Chinese display name for a market tag ('cn'/'hk'/'us')."""
+    return _MARKET_DISPLAY_NAMES.get(market, "A股")
+
+
 def is_bse_code(code: str) -> bool:
     """
     Check if the code is a Beijing Stock Exchange (BSE) A-share code.
