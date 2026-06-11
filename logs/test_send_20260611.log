@@ -1,0 +1,19 @@
+2026-06-11 15:17:17 | INFO     | src/logging_config.py:153 | 日志系统初始化完成，日志目录: logs
+2026-06-11 15:17:17 | INFO     | src/logging_config.py:154 | 常规日志: logs/test_send_20260611.log
+2026-06-11 15:17:17 | INFO     | src/logging_config.py:155 | 调试日志: logs/test_send_debug_20260611.log
+2026-06-11 15:17:17 | INFO     | src/config.py:1230 | LLM channel 'gemini': 2 model(s), 1 key(s)
+2026-06-11 15:17:20 | INFO     | src/notification.py:159 | 已配置 1 个通知渠道：邮件
+2026-06-11 15:17:20 | INFO     | src/storage.py:675 | 数据库初始化完成: sqlite:////Users/dddd/Documents/projects/daily_stock_analysis-main/data/stock_analysis.db
+2026-06-11 15:17:20 | INFO     | src/notification.py:1638 | 正在向 1 个渠道发送通知：邮件
+2026-06-11 15:17:20 | ERROR    | src/notification_sender/email_sender.py:218 | 发送邮件失败: 'NotificationService' object has no attribute 'config'
+2026-06-11 15:17:20 | INFO     | src/notification.py:1701 | 通知发送完成：成功 0 个，失败 1 个
+2026-06-11 15:18:02 | INFO     | src/logging_config.py:153 | 日志系统初始化完成，日志目录: logs
+2026-06-11 15:18:02 | INFO     | src/logging_config.py:154 | 常规日志: logs/test_send_20260611.log
+2026-06-11 15:18:02 | INFO     | src/logging_config.py:155 | 调试日志: logs/test_send_debug_20260611.log
+2026-06-11 15:18:02 | INFO     | src/config.py:1230 | LLM channel 'gemini': 2 model(s), 1 key(s)
+2026-06-11 15:18:04 | INFO     | src/notification.py:159 | 已配置 1 个通知渠道：邮件
+2026-06-11 15:18:04 | INFO     | src/storage.py:675 | 数据库初始化完成: sqlite:////Users/dddd/Documents/projects/daily_stock_analysis-main/data/stock_analysis.db
+2026-06-11 15:18:04 | INFO     | src/notification.py:1638 | 正在向 1 个渠道发送通知：邮件
+2026-06-11 15:18:04 | INFO     | src/notification_sender/email_sender.py:189 | 自动识别邮箱类型: outlook.com -> smtp-mail.outlook.com:587
+2026-06-11 15:18:11 | ERROR    | src/notification_sender/email_sender.py:213 | 邮件发送失败：认证错误，请检查邮箱和授权码是否正确
+2026-06-11 15:18:11 | INFO     | src/notification.py:1701 | 通知发送完成：成功 0 个，失败 1 个
