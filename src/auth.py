@@ -67,8 +67,13 @@ def _get_credential_path() -> Path:
 
 
 def _is_auth_enabled_from_env() -> bool:
-    """Read ADMIN_AUTH_ENABLED from .env file."""
+    """Read ADMIN_AUTH_ENABLED from process env (e.g. Railway/Docker) or .env file."""
     _ensure_env_loaded()
+    # 1) 进程环境变量优先 —— 云平台(Railway / Docker)注入的变量没有 .env 文件也能生效
+    raw = os.getenv("ADMIN_AUTH_ENABLED")
+    if raw is not None:
+        return raw.strip().lower() in ("true", "1", "yes")
+    # 2) 回退:直接读取 .env 文件
     env_file = os.getenv("ENV_FILE")
     env_path = Path(env_file) if env_file else Path(__file__).resolve().parent.parent / ".env"
     if not env_path.exists():
