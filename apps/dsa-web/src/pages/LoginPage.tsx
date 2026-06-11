@@ -6,6 +6,14 @@ import type { ParsedApiError } from '../api/error';
 import { isParsedApiError } from '../api/error';
 import { useAuth } from '../hooks';
 import { SettingsAlert } from '../components/settings';
+import { GOOGLE_LOGIN_URL } from '../api/auth';
+
+const GOOGLE_ERROR_MESSAGES: Record<string, string> = {
+  google_state: 'Google 登录校验失败，请重试',
+  google_failed: 'Google 登录失败，请重试',
+  google_not_authorized: '该 Google 账号未被授权，请联系管理员开通',
+  google_not_configured: '尚未配置 Google 登录',
+};
 
 const LoginPage: React.FC = () => {
   const { login, passwordSet } = useAuth();
@@ -14,11 +22,15 @@ const LoginPage: React.FC = () => {
   const rawRedirect = searchParams.get('redirect') ?? '';
   const redirect =
     rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : '/';
+  const googleError = searchParams.get('error');
 
+  const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | ParsedApiError | null>(null);
+  const [error, setError] = useState<string | ParsedApiError | null>(
+    googleError ? (GOOGLE_ERROR_MESSAGES[googleError] ?? 'Google 登录失败') : null
+  );
 
   const isFirstTime = !passwordSet;
 
@@ -31,7 +43,11 @@ const LoginPage: React.FC = () => {
     }
     setIsSubmitting(true);
     try {
-      const result = await login(password, isFirstTime ? passwordConfirm : undefined);
+      const result = await login(
+        isFirstTime ? 'admin' : username.trim(),
+        password,
+        isFirstTime ? passwordConfirm : undefined
+      );
       if (result.success) {
         navigate(redirect, { replace: true });
       } else {
@@ -55,6 +71,24 @@ const LoginPage: React.FC = () => {
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {!isFirstTime ? (
+            <div>
+              <label htmlFor="username" className="mb-1 block text-sm font-medium text-secondary-text">
+                用户名
+              </label>
+              <input
+                id="username"
+                type="text"
+                className="input-terminal"
+                placeholder="输入用户名"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={isSubmitting}
+                autoComplete="username"
+              />
+            </div>
+          ) : null}
+
           <div>
             <label htmlFor="password" className="mb-1 block text-sm font-medium text-secondary-text">
               {isFirstTime ? '新密码' : '密码'}
@@ -114,6 +148,22 @@ const LoginPage: React.FC = () => {
             {isSubmitting ? (isFirstTime ? '设置中...' : '登录中...') : isFirstTime ? '设置密码' : '登录'}
           </button>
         </form>
+
+        {!isFirstTime ? (
+          <>
+            <div className="my-4 flex items-center gap-3 text-xs text-secondary-text">
+              <span className="h-px flex-1 bg-white/10" />
+              或
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+            <a
+              href={GOOGLE_LOGIN_URL}
+              className="btn-secondary flex w-full items-center justify-center gap-2"
+            >
+              使用 Google 登录
+            </a>
+          </>
+        ) : null}
       </div>
     </div>
   );

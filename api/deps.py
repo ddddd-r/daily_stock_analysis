@@ -10,14 +10,15 @@ API 依赖注入模块
 3. 提供服务层依赖
 """
 
-from typing import Generator
+from typing import Generator, Optional
 
-from fastapi import Request
+from fastapi import Request, HTTPException
 from sqlalchemy.orm import Session
 
 from src.storage import DatabaseManager
 from src.config import get_config, Config
 from src.services.system_config_service import SystemConfigService
+from src.auth import is_auth_enabled
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -69,3 +70,32 @@ def get_system_config_service(request: Request) -> SystemConfigService:
         service = SystemConfigService()
         request.app.state.system_config_service = service
     return service
+
+
+def get_current_user_id(request: Request) -> Optional[str]:
+    """Return the authenticated user id set by AuthMiddleware.
+
+    When auth is disabled there is no user context, so this returns None and
+    callers should treat data as belonging to the implicit single tenant.
+    """
+    return getattr(request.state, "user_id", None)
+
+
+def require_admin(request: Request):
+    """FastAPI dependency that requires the current user to be an active admin.
+
+    When auth is disabled the instance is single-tenant and the sole operator
+    is treated as admin (returns None). When enabled, the session user must
+    exist, be active and have is_admin=True, else 403.
+    """
+    if not is_auth_enabled():
+        return None
+    user_id = getattr(request.state, "user_id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    user = DatabaseManager.get_instance().get_user_by_id(user_id)
+    if not user or not user.get("is_active"):
+        raise HTTPException(status_code=401, detail="Login required")
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return user

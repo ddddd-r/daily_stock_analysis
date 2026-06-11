@@ -6,20 +6,26 @@ from __future__ import annotations
 import logging
 import os
 
+import secrets as _secrets
+from urllib.parse import urlencode
+
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from api.deps import get_system_config_service
 from src.auth import (
     COOKIE_NAME,
     SESSION_MAX_AGE_HOURS_DEFAULT,
+    authenticate_user,
+    bootstrap_admin_user,
     change_password,
     check_rate_limit,
     clear_rate_limit,
     create_session,
     get_client_ip,
     has_stored_password,
+    hash_password,
     is_auth_enabled,
     is_password_changeable,
     is_password_set,
@@ -27,11 +33,14 @@ from src.auth import (
     refresh_auth_state,
     rotate_session_secret,
     set_initial_password,
+    validate_password,
     verify_password,
+    verify_password_string,
     verify_stored_password,
     verify_session,
 )
 from src.config import Config, setup_env
+from src.storage import get_db
 from src.core.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
@@ -44,7 +53,8 @@ class LoginRequest(BaseModel):
 
     model_config = {"populate_by_name": True}
 
-    password: str = Field(default="", description="Admin password")
+    username: str = Field(default="", description="Username (defaults to 'admin' when empty)")
+    password: str = Field(default="", description="Password")
     password_confirm: str | None = Field(default=None, alias="passwordConfirm", description="Confirm (first-time)")
 
 
@@ -136,8 +146,32 @@ def _apply_auth_enabled(enabled: bool, request: Request | None = None) -> bool:
 
 
 def _password_set_for_response(auth_enabled: bool) -> bool:
-    """Avoid exposing stored-password state when auth is disabled."""
-    return is_password_set() if auth_enabled else False
+    """Whether initial setup is done — true once a user account exists.
+
+    The multi-user login stores credentials in the users table, so a created
+    account (not the legacy file) is the source of truth. The legacy file is
+    still honoured for the settings-toggle bootstrap path.
+    """
+    if not auth_enabled:
+        return False
+    try:
+        if get_db().count_users() > 0:
+            return True
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return has_stored_password()
+
+
+def _public_user(user: dict | None) -> dict | None:
+    """Shape a user dict for the frontend (id/name/admin only)."""
+    if not user:
+        return None
+    return {
+        "id": user.get("id"),
+        "username": user.get("username"),
+        "email": user.get("email"),
+        "isAdmin": bool(user.get("is_admin")),
+    }
 
 
 def _set_session_cookie(response: Response, session_value: str, request: Request) -> None:
@@ -163,14 +197,23 @@ async def auth_status(request: Request):
     """Return authEnabled, loggedIn, passwordSet, passwordChangeable without requiring auth."""
     auth_enabled = is_auth_enabled()
     logged_in = False
+    current_user = None
     if auth_enabled:
         cookie_val = request.cookies.get(COOKIE_NAME)
-        logged_in = verify_session(cookie_val) if cookie_val else False
+        user_id = verify_session(cookie_val) if cookie_val else None
+        logged_in = bool(user_id)
+        if user_id:
+            user = get_db().get_user_by_id(user_id)
+            if user and user.get("is_active"):
+                current_user = _public_user(user)
+            else:
+                logged_in = False
     return {
         "authEnabled": auth_enabled,
         "loggedIn": logged_in,
         "passwordSet": _password_set_for_response(auth_enabled),
         "passwordChangeable": is_password_changeable() if auth_enabled else False,
+        "currentUser": current_user,
     }
 
 
@@ -313,7 +356,10 @@ async def auth_update_settings(request: Request, body: AuthSettingsRequest):
             )
 
     if target_enabled:
-        session_val = create_session()
+        # Bind the session to the (bootstrapped) admin user so multi-user
+        # endpoints get a valid user_id from the toggle-created session.
+        admin_uid = bootstrap_admin_user() or ""
+        session_val = create_session(admin_uid)
         if not session_val:
             rollback_ok = _apply_auth_enabled(current_enabled, request=request)
             if not rollback_ok:
@@ -375,52 +421,87 @@ async def auth_login(request: Request, body: LoginRequest):
             },
         )
 
-    password_set = is_password_set()
+    db = get_db()
+    # Adopt any legacy file-based admin password into a users-table admin row.
+    bootstrap_admin_user()
+    username = (body.username or "").strip() or "admin"
 
-    if not password_set:
-        # First-time setup: require passwordConfirm
+    # First-time setup: no users exist yet. Only the implicit admin account can
+    # be created this way (no open self-registration); subsequent users come
+    # from the admin user-management API.
+    if db.count_users() == 0:
+        if username != "admin":
+            record_login_failure(ip)
+            return JSONResponse(
+                status_code=401,
+                content={"error": "invalid_credentials", "message": "用户名或密码错误"},
+            )
         confirm = (body.password_confirm or "").strip()
         if password != confirm:
             record_login_failure(ip)
             return JSONResponse(
                 status_code=400,
-                content={"error": "password_mismatch", "message": "Passwords do not match"},
+                content={"error": "password_mismatch", "message": "两次输入的密码不一致"},
             )
-        err = set_initial_password(password)
+        err = validate_password(password)
         if err:
             record_login_failure(ip)
             return JSONResponse(
                 status_code=400,
                 content={"error": "invalid_password", "message": err},
             )
+        created = db.create_user(username="admin", password_hash=hash_password(password), is_admin=True)
+        if not created:
+            return JSONResponse(
+                status_code=500,
+                content={"error": "internal_error", "message": "Failed to create admin user"},
+            )
+        uid = created["id"]
+        user = created
     else:
-        if not verify_password(password):
+        user = authenticate_user(username, password)
+        if not user:
             record_login_failure(ip)
             return JSONResponse(
                 status_code=401,
-                content={"error": "invalid_password", "message": "密码错误"},
+                content={"error": "invalid_credentials", "message": "用户名或密码错误"},
             )
+        uid = user["id"]
 
     clear_rate_limit(ip)
-    session_val = create_session()
+    session_val = create_session(uid)
     if not session_val:
         return JSONResponse(
             status_code=500,
             content={"error": "internal_error", "message": "Failed to create session"},
         )
 
-    resp = JSONResponse(content={"ok": True})
+    resp = JSONResponse(content={"ok": True, "user": _public_user(user)})
     _set_session_cookie(resp, session_val, request)
     return resp
+
+
+def _resolve_session_user_id(request: Request) -> str | None:
+    """Resolve the acting user id: middleware state → cookie → bootstrap admin."""
+    state = getattr(request, "state", None)
+    uid = getattr(state, "user_id", None) if state is not None else None
+    if uid:
+        return uid
+    cookie_val = request.cookies.get(COOKIE_NAME) if hasattr(request, "cookies") else None
+    uid = verify_session(cookie_val) if cookie_val else None
+    if uid:
+        return uid
+    # Single-admin fallback (legacy/CLI-style callers without a session).
+    return bootstrap_admin_user()
 
 
 @router.post(
     "/change-password",
     summary="Change password",
-    description="Change password. Requires valid session.",
+    description="Change the current user's password. Requires valid session.",
 )
-async def auth_change_password(body: ChangePasswordRequest):
-    """Change password. Requires login."""
+async def auth_change_password(request: Request, body: ChangePasswordRequest):
+    """Change the logged-in user's password against the users table."""
     if not is_password_changeable():
         return JSONResponse(
             status_code=400,
@@ -441,13 +522,26 @@ async def auth_change_password(body: ChangePasswordRequest):
             status_code=400,
             content={"error": "password_mismatch", "message": "两次输入的新密码不一致"},
         )
-
-    err = change_password(current, new_pwd)
+    err = validate_password(new_pwd)
     if err:
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_password", "message": err},
         )
+
+    uid = _resolve_session_user_id(request)
+    db = get_db()
+    if not uid or not db.get_user_by_id(uid):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "unauthorized", "message": "请先登录"},
+        )
+    if not verify_password_string(current, db.get_user_password_hash(uid)):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_password", "message": "当前密码错误"},
+        )
+    db.set_user_password(uid, hash_password(new_pwd))
     return Response(status_code=204)
 
 
@@ -460,4 +554,119 @@ async def auth_logout(request: Request):
     """Clear session cookie."""
     resp = Response(status_code=204)
     resp.delete_cookie(key=COOKIE_NAME, path="/")
+    return resp
+
+
+# ----------------------------------------------------------------------
+# Google OAuth (login only — accounts must be pre-created by an admin)
+# ----------------------------------------------------------------------
+
+OAUTH_STATE_COOKIE = "dsa_oauth_state"
+
+
+def _google_oauth_config(request: Request) -> tuple[str, str, str]:
+    """Return (client_id, client_secret, redirect_uri). Empty id/secret == unconfigured."""
+    cid = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+    secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+    redirect = (os.getenv("GOOGLE_REDIRECT_URI") or "").strip()
+    if not redirect:
+        redirect = str(request.base_url).rstrip("/") + "/api/v1/auth/google/callback"
+    return cid, secret, redirect
+
+
+@router.get("/google/login", summary="Start Google OAuth login")
+async def google_login(request: Request):
+    """Redirect to Google's consent screen. Account must already exist."""
+    if not is_auth_enabled():
+        return JSONResponse(status_code=400, content={"error": "auth_disabled", "message": "Authentication is not configured"})
+    cid, secret, redirect = _google_oauth_config(request)
+    if not cid or not secret:
+        return JSONResponse(status_code=400, content={"error": "google_not_configured", "message": "未配置 Google 登入"})
+
+    state = _secrets.token_urlsafe(24)
+    params = {
+        "client_id": cid,
+        "redirect_uri": redirect,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    resp = RedirectResponse("https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params))
+    resp.set_cookie(
+        key=OAUTH_STATE_COOKIE,
+        value=state,
+        max_age=600,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_params(request)["secure"],
+        path="/",
+    )
+    return resp
+
+
+@router.get("/google/callback", summary="Google OAuth callback")
+async def google_callback(request: Request, code: str = "", state: str = ""):
+    """Exchange the code, match to a pre-created user, and issue a session."""
+    if not is_auth_enabled():
+        return RedirectResponse("/login")
+    saved = request.cookies.get(OAUTH_STATE_COOKIE)
+    if not code or not state or not saved or not _secrets.compare_digest(state, saved):
+        return RedirectResponse("/login?error=google_state")
+
+    cid, secret, redirect = _google_oauth_config(request)
+    if not cid or not secret:
+        return RedirectResponse("/login?error=google_not_configured")
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            token_resp = await client.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": cid,
+                    "client_secret": secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": redirect,
+                },
+            )
+            token_resp.raise_for_status()
+            access_token = token_resp.json().get("access_token")
+            if not access_token:
+                raise ValueError("no access_token")
+            info = await client.get(
+                "https://openidconnect.googleapis.com/v1/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            info.raise_for_status()
+            userinfo = info.json()
+    except Exception as exc:
+        logger.warning("Google OAuth exchange failed: %s", exc)
+        return RedirectResponse("/login?error=google_failed")
+
+    sub = userinfo.get("sub")
+    email = userinfo.get("email")
+    if not sub:
+        return RedirectResponse("/login?error=google_failed")
+
+    db = get_db()
+    user = db.get_user_by_google_sub(sub)
+    if not user and email:
+        candidate = db.get_user_by_email(email)
+        if candidate:
+            db.link_google_to_user(candidate["id"], sub, email)
+            user = db.get_user_by_id(candidate["id"])
+    if not user or not user.get("is_active"):
+        # Admin-only account creation: an unrecognised Google identity is rejected.
+        return RedirectResponse("/login?error=google_not_authorized")
+
+    session_val = create_session(user["id"])
+    if not session_val:
+        return RedirectResponse("/login?error=google_failed")
+    resp = RedirectResponse("/")
+    _set_session_cookie(resp, session_val, request)
+    resp.delete_cookie(key=OAUTH_STATE_COOKIE, path="/")
     return resp

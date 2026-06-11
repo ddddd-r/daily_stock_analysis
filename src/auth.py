@@ -334,42 +334,125 @@ def change_password(current: str, new: str) -> Optional[str]:
         return "密码保存失败"
 
 
-def create_session() -> str:
-    """Create a signed session payload. Format: nonce.ts.signature."""
+def hash_password(password: str) -> str:
+    """Return a PBKDF2 credential string ``salt_b64:hash_b64`` for a password.
+
+    Shared helper used both by the legacy file-based admin credential and by
+    per-user accounts stored in the ``users`` table.
+    """
+    salt = secrets.token_bytes(32)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt=salt, iterations=PBKDF2_ITERATIONS
+    )
+    salt_b64 = base64.standard_b64encode(salt).decode("ascii")
+    hash_b64 = base64.standard_b64encode(derived).decode("ascii")
+    return f"{salt_b64}:{hash_b64}"
+
+
+def verify_password_string(password: str, stored: Optional[str]) -> bool:
+    """Verify a password against a stored ``salt_b64:hash_b64`` string."""
+    if not password or not stored:
+        return False
+    parsed = _parse_password_hash(stored)
+    if parsed is None:
+        return False
+    salt, stored_hash = parsed
+    return _verify_password_hash(password, salt, stored_hash)
+
+
+def validate_password(pwd: str) -> Optional[str]:
+    """Public wrapper around password policy validation (None == valid)."""
+    return _validate_password(pwd)
+
+
+def create_session(user_id: str = "") -> str:
+    """Create a signed session payload. Format: user_id.nonce.ts.signature.
+
+    ``user_id`` is a uuid hex string (no dots), so the 4-part split is stable.
+    Passing an empty user_id yields a session that ``verify_session`` rejects,
+    forcing callers to bind a real user.
+    """
     secret = _get_session_secret()
     if not secret:
         return ""
     nonce = secrets.token_urlsafe(32)
     ts = str(int(time.time()))
-    payload = f"{nonce}.{ts}"
+    payload = f"{user_id}.{nonce}.{ts}"
     sig = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
 
-def verify_session(value: str) -> bool:
-    """Verify session cookie and check expiry."""
+def verify_session(value: str) -> Optional[str]:
+    """Verify session cookie and expiry. Returns the user_id, or None if invalid."""
     secret = _get_session_secret()
     if not secret or not value:
-        return False
+        return None
     parts = value.split(".")
-    if len(parts) != 3:
-        return False
-    nonce, ts_str, sig = parts[0], parts[1], parts[2]
-    payload = f"{nonce}.{ts_str}"
+    if len(parts) != 4:
+        return None  # legacy 3-part cookies are no longer valid; re-login required
+    user_id, nonce, ts_str, sig = parts
+    payload = f"{user_id}.{nonce}.{ts_str}"
     expected = hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
-        return False
+        return None
     try:
         ts = int(ts_str)
     except ValueError:
-        return False
+        return None
     try:
         max_age_hours = int(os.getenv("ADMIN_SESSION_MAX_AGE_HOURS", str(SESSION_MAX_AGE_HOURS_DEFAULT)))
     except ValueError:
         max_age_hours = SESSION_MAX_AGE_HOURS_DEFAULT
     if time.time() - ts > max_age_hours * 3600:
-        return False
-    return True
+        return None
+    return user_id or None
+
+
+def bootstrap_admin_user() -> Optional[str]:
+    """Ensure at least one admin user exists; return the admin user_id.
+
+    On first run, if a legacy file-based admin password exists, an ``admin``
+    user is created that adopts it. If no users and no legacy password exist,
+    returns None (the first /auth/login with password+confirm will create the
+    admin account).
+    """
+    from src.storage import get_db
+
+    db = get_db()
+    try:
+        if db.count_users() > 0:
+            existing = db.get_user_by_username("admin")
+            return existing["id"] if existing else None
+        # No users yet — adopt legacy file password if present. If there is no
+        # legacy password, do NOT create a passwordless admin; the first
+        # /auth/login (password + confirm) will create the admin account.
+        if not (_load_credential_from_file() and _password_hash_salt and _password_hash_stored):
+            return None
+        salt_b64 = base64.standard_b64encode(_password_hash_salt).decode("ascii")
+        hash_b64 = base64.standard_b64encode(_password_hash_stored).decode("ascii")
+        legacy = f"{salt_b64}:{hash_b64}"
+        created = db.create_user(username="admin", password_hash=legacy, is_admin=True)
+        return created["id"] if created else None
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.error("bootstrap_admin_user failed: %s", exc)
+        return None
+
+
+def authenticate_user(username: str, password: str) -> Optional[dict]:
+    """Verify username + password against the users table.
+
+    Returns the user dict on success, or None on failure / inactive account.
+    """
+    from src.storage import get_db
+
+    db = get_db()
+    user = db.get_user_by_username(username)
+    if not user or not user.get("is_active"):
+        return None
+    stored = db.get_user_password_hash(user["id"])
+    if not verify_password_string(password, stored):
+        return None
+    return user
 
 
 def get_client_ip(request) -> str:

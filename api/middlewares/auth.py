@@ -20,6 +20,8 @@ EXEMPT_PATHS = frozenset({
     "/api/v1/auth/login",
     "/api/v1/auth/status",
     "/api/v1/auth/logout",
+    "/api/v1/auth/google/login",
+    "/api/v1/auth/google/callback",
     "/api/health",
     "/health",
     "/docs",
@@ -53,7 +55,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         cookie_val = request.cookies.get(COOKIE_NAME)
-        if not cookie_val or not verify_session(cookie_val):
+        user_id = verify_session(cookie_val) if cookie_val else None
+        if not user_id:
             return JSONResponse(
                 status_code=401,
                 content={
@@ -62,6 +65,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
             )
 
+        # Expose the authenticated user id to downstream endpoints/deps.
+        request.state.user_id = user_id
         return await call_next(request)
 
 

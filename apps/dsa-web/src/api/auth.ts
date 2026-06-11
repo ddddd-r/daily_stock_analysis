@@ -1,11 +1,22 @@
 import apiClient from './index';
 
+export type CurrentUser = {
+  id: string;
+  username: string;
+  email?: string | null;
+  isAdmin: boolean;
+};
+
 export type AuthStatusResponse = {
   authEnabled: boolean;
   loggedIn: boolean;
   passwordSet?: boolean;
   passwordChangeable?: boolean;
+  currentUser?: CurrentUser | null;
 };
+
+// Full-page redirect endpoint that starts the Google OAuth flow.
+export const GOOGLE_LOGIN_URL = '/api/v1/auth/google/login';
 
 export const authApi = {
   async getStatus(): Promise<AuthStatusResponse> {
@@ -38,8 +49,11 @@ export const authApi = {
     return data;
   },
 
-  async login(password: string, passwordConfirm?: string): Promise<void> {
-    const body: { password: string; passwordConfirm?: string } = { password };
+  async login(username: string, password: string, passwordConfirm?: string): Promise<void> {
+    const body: { username: string; password: string; passwordConfirm?: string } = {
+      username,
+      password,
+    };
     if (passwordConfirm !== undefined) {
       body.passwordConfirm = passwordConfirm;
     }

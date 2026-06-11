@@ -91,11 +91,12 @@ class AuthSessionTestCase(unittest.TestCase):
 
     def test_create_session_returns_signed_payload(self) -> None:
         def run():
-            tok = auth.create_session()
+            tok = auth.create_session("user123")
             self.assertTrue(tok, "session token should be non-empty")
             parts = tok.split(".")
-            self.assertEqual(len(parts), 3, "format: nonce.ts.signature")
-            nonce, ts, sig = parts
+            self.assertEqual(len(parts), 4, "format: user_id.nonce.ts.signature")
+            user_id, nonce, ts, sig = parts
+            self.assertEqual(user_id, "user123")
             self.assertTrue(nonce)
             self.assertTrue(ts.isdigit())
             self.assertTrue(sig)
@@ -105,8 +106,10 @@ class AuthSessionTestCase(unittest.TestCase):
 
     def test_verify_session_valid_token(self) -> None:
         def run():
-            tok = auth.create_session()
-            self.assertTrue(auth.verify_session(tok))
+            tok = auth.create_session("user123")
+            self.assertEqual(auth.verify_session(tok), "user123")
+            # Empty user id yields an unusable session.
+            self.assertIsNone(auth.verify_session(auth.create_session("")))
 
         self._patch_env_and_run(test_fn=run)
 
@@ -235,7 +238,10 @@ class AuthSetPasswordTestCase(unittest.TestCase):
         custom_env = self.data_dir / "custom.env"
         custom_env.write_text("ADMIN_AUTH_ENABLED=true\n", encoding="utf-8")
 
+        # Clear any ambient ADMIN_AUTH_ENABLED so the .env-file path is exercised
+        # deterministically (process env takes precedence over the file).
         with patch.dict(os.environ, {"ENV_FILE": str(custom_env)}):
+            os.environ.pop("ADMIN_AUTH_ENABLED", None)
             auth._auth_enabled = None
             self.assertTrue(auth._is_auth_enabled_from_env())
 
