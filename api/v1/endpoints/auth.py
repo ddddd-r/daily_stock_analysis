@@ -146,8 +146,20 @@ def _apply_auth_enabled(enabled: bool, request: Request | None = None) -> bool:
 
 
 def _password_set_for_response(auth_enabled: bool) -> bool:
-    """Avoid exposing stored-password state when auth is disabled."""
-    return is_password_set() if auth_enabled else False
+    """Whether initial setup is done — true once a user account exists.
+
+    The multi-user login stores credentials in the users table, so a created
+    account (not the legacy file) is the source of truth. The legacy file is
+    still honoured for the settings-toggle bootstrap path.
+    """
+    if not auth_enabled:
+        return False
+    try:
+        if get_db().count_users() > 0:
+            return True
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return has_stored_password()
 
 
 def _public_user(user: dict | None) -> dict | None:

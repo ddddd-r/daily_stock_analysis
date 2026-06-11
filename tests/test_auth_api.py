@@ -98,6 +98,26 @@ class AuthApiTestCase(unittest.TestCase):
         self.assertIn("dsa_session=", response.headers["set-cookie"])
         self.assertIn(b'"ok":true', response.body)
 
+    def test_password_set_reflects_user_account_not_file(self) -> None:
+        # Fresh instance: no users and no legacy file -> first-time setup.
+        data = asyncio.run(auth_endpoint.auth_status(self._build_request()))
+        self.assertFalse(data["passwordSet"])
+
+        # First-time login creates the admin user in the DB (no file written).
+        resp = asyncio.run(
+            auth_endpoint.auth_login(
+                self._build_request(),
+                auth_endpoint.LoginRequest(password="setup123", passwordConfirm="setup123"),
+            )
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        # Regression: passwordSet must now be True (driven by the users table),
+        # otherwise the login page keeps showing "set initial password".
+        data = asyncio.run(auth_endpoint.auth_status(self._build_request()))
+        self.assertTrue(data["passwordSet"])
+        self.assertFalse((self.data_dir / ".admin_password_hash").exists())
+
     def test_login_first_time_mismatch_rejected(self) -> None:
         response = asyncio.run(
             auth_endpoint.auth_login(
