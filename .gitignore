@@ -1,0 +1,8 @@
+# Secrets — never commit local environment / API keys
+.env
+.env.local
+.env.*.local
+
+# Python virtualenv
+.venv/
+venv/

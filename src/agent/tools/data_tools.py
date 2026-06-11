@@ -309,12 +309,15 @@ get_chip_distribution_tool = ToolDefinition(
     name="get_chip_distribution",
     description="Get chip distribution analysis for a stock. Returns profit ratio, "
                 "average cost, chip concentration at 90% and 70% levels. "
-                "Useful for judging support/resistance and holding structure.",
+                "Useful for judging support/resistance and holding structure. "
+                "A-SHARE ONLY — do not call for HK (港股) or US (美股) stocks; "
+                "their chip data is unavailable and the call will return an error. "
+                "Use get_stock_info for HK/US fundamentals instead.",
     parameters=[
         ToolParameter(
             name="stock_code",
             type="string",
-            description="A-share stock code, e.g., '600519'",
+            description="A-share stock code, e.g., '600519' (HK/US not supported)",
         ),
     ],
     handler=_handle_get_chip_distribution,
