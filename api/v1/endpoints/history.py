@@ -40,7 +40,7 @@ router = APIRouter()
 
 
 @router.get(
-    "",
+    "/history",
     response_model=HistoryListResponse,
     responses={
         200: {"description": "历史记录列表"},
@@ -119,7 +119,7 @@ def get_history_list(
 
 
 @router.delete(
-    "",
+    "/history",
     response_model=DeleteHistoryResponse,
     responses={
         200: {"description": "删除成功"},
@@ -164,7 +164,7 @@ def delete_history_records(
 
 
 @router.get(
-    "/{record_id}",
+    "/history/{record_id}",
     response_model=AnalysisReport,
     responses={
         200: {"description": "报告详情"},
@@ -285,7 +285,7 @@ def get_history_detail(
 
 
 @router.get(
-    "/{record_id}/news",
+    "/history/{record_id}/news",
     response_model=NewsIntelResponse,
     responses={
         200: {"description": "新闻情报列表"},
@@ -343,7 +343,7 @@ def get_history_news(
 
 
 @router.get(
-    "/{record_id}/markdown",
+    "/history/{record_id}/markdown",
     response_model=MarkdownReportResponse,
     responses={
         200: {"description": "Markdown 格式报告"},

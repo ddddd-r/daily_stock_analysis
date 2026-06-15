@@ -62,6 +62,23 @@ class HistoryRoutePathTest(unittest.TestCase):
         paths = {r.path for r in self.client.app.routes}
         self.assertIn("/api/v1/history", paths)
         self.assertNotIn("/api/v1/history/", paths)
+        # users collection has the same shape requirement
+        self.assertIn("/api/v1/users", paths)
+        self.assertNotIn("/api/v1/users/", paths)
+
+    def test_no_empty_route_paths(self):
+        # An empty route path crashes app startup on FastAPI versions that
+        # reject it ("Prefix and path cannot be both empty"), and a trailing
+        # slash gets 404'd by the SPA catch-all. Guard against both.
+        for route in self.client.app.routes:
+            path = getattr(route, "path", None)
+            if path is not None:
+                self.assertNotEqual(path, "", f"empty route path: {route}")
+                if path.startswith("/api/"):
+                    self.assertFalse(
+                        path.endswith("/"),
+                        f"/api route must not end with '/': {path}",
+                    )
 
     def test_list_no_trailing_slash_returns_200(self):
         # No slash must hit the route directly (200), not the 404 catch-all.

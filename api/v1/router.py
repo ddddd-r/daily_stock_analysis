@@ -35,8 +35,11 @@ router.include_router(
 )
 
 router.include_router(
+    # No prefix here: history routes carry the full "/history" path so the
+    # collection endpoint is "/api/v1/history" with neither an empty route
+    # path (which FastAPI rejects when the include prefix is empty) nor a
+    # trailing slash (which the SPA catch-all would 404 before redirecting).
     history.router,
-    prefix="/history",
     tags=["History"]
 )
 
@@ -71,7 +74,9 @@ router.include_router(
 )
 
 router.include_router(
+    # No prefix: routes carry the full "/users" path so the collection
+    # endpoint avoids an empty route path (rejected by FastAPI) and a trailing
+    # slash (404'd by the SPA catch-all). See history router above.
     users.router,
-    prefix="/users",
     tags=["Users"]
 )
