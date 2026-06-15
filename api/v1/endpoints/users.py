@@ -43,12 +43,12 @@ class SetActiveRequest(BaseModel):
     is_active: bool = Field(alias="isActive")
 
 
-@router.get("", summary="List users")
+@router.get("/", summary="List users")
 async def list_users(_admin=Depends(require_admin)):
     return {"users": get_db().list_users()}
 
 
-@router.post("", summary="Create a user")
+@router.post("/", summary="Create a user")
 async def create_user(body: CreateUserRequest, _admin=Depends(require_admin)):
     db = get_db()
     password_hash = None
