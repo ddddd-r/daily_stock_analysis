@@ -40,7 +40,7 @@ router = APIRouter()
 
 
 @router.get(
-    "",
+    "/",
     response_model=HistoryListResponse,
     responses={
         200: {"description": "历史记录列表"},
@@ -119,7 +119,7 @@ def get_history_list(
 
 
 @router.delete(
-    "",
+    "/",
     response_model=DeleteHistoryResponse,
     responses={
         200: {"description": "删除成功"},
