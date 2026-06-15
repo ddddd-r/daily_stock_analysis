@@ -14,7 +14,7 @@ from fastapi import APIRouter
 from api.v1.endpoints import analysis, auth, history, stocks, backtest, system_config, agent, usage, portfolio, users
 
 # 创建 v1 版本主路由
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", redirect_slashes=True)
 
 router.include_router(
     auth.router,
