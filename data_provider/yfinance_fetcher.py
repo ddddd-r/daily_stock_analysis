@@ -27,7 +27,7 @@ from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
+    retry_if_exception,
     before_sleep_log,
 )
 
@@ -51,6 +51,42 @@ except (ImportError, ModuleNotFoundError):
 import os
 
 logger = logging.getLogger(__name__)
+
+# Substrings that indicate a *transient* Yahoo Finance failure worth retrying
+# (rate limiting / dropped connections), as opposed to a genuine "no data".
+# Yahoo throttles shared/cloud IPs aggressively (HTTP 429) and drops keep-alive
+# connections; without retry a single blip wipes the whole report.
+_RETRIABLE_YF_SIGNATURES = (
+    "429",
+    "too many requests",
+    "rate limit",
+    "ratelimit",
+    "remotedisconnected",
+    "remote end closed",
+    "connection aborted",
+    "connection reset",
+    "temporarily unavailable",
+    "timed out",
+    "timeout",
+    "max retries exceeded",
+)
+
+
+def _is_retriable_yf_error(exc: BaseException) -> bool:
+    """Return True for transient yfinance errors that should be retried.
+
+    Covers raw connection/timeout/HTTP errors and the rate-limit / dropped
+    connection conditions that ``_fetch_raw_data`` wraps into ``DataFetchError``
+    (inspected by message). A genuine empty result ("未查询到 ... 的数据") does
+    NOT match, so missing symbols fail fast instead of looping.
+    """
+    if isinstance(exc, (ConnectionError, TimeoutError, HTTPError, URLError)):
+        return True
+    name = type(exc).__name__.lower()
+    if "ratelimit" in name or "timeout" in name:
+        return True
+    msg = str(exc).lower()
+    return any(sig in msg for sig in _RETRIABLE_YF_SIGNATURES)
 
 
 class YfinanceFetcher(BaseFetcher):
@@ -151,9 +187,9 @@ class YfinanceFetcher(BaseFetcher):
             return f"{code}.SZ"
 
     @retry(
-        stop=stop_after_attempt(3),
+        stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+        retry=retry_if_exception(_is_retriable_yf_error),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
