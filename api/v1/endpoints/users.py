@@ -43,12 +43,12 @@ class SetActiveRequest(BaseModel):
     is_active: bool = Field(alias="isActive")
 
 
-@router.get("", summary="List users")
+@router.get("/users", summary="List users")
 async def list_users(_admin=Depends(require_admin)):
     return {"users": get_db().list_users()}
 
 
-@router.post("", summary="Create a user")
+@router.post("/users", summary="Create a user")
 async def create_user(body: CreateUserRequest, _admin=Depends(require_admin)):
     db = get_db()
     password_hash = None
@@ -82,7 +82,7 @@ async def create_user(body: CreateUserRequest, _admin=Depends(require_admin)):
     return JSONResponse(status_code=201, content=created)
 
 
-@router.post("/{user_id}/password", summary="Set a user's password")
+@router.post("/users/{user_id}/password", summary="Set a user's password")
 async def set_user_password(user_id: str, body: SetPasswordRequest, _admin=Depends(require_admin)):
     err = validate_password(body.password)
     if err:
@@ -92,7 +92,7 @@ async def set_user_password(user_id: str, body: SetPasswordRequest, _admin=Depen
     return {"ok": True}
 
 
-@router.post("/{user_id}/active", summary="Enable or disable a user")
+@router.post("/users/{user_id}/active", summary="Enable or disable a user")
 async def set_user_active(user_id: str, body: SetActiveRequest, admin=Depends(require_admin)):
     # Guard: an admin cannot disable their own account.
     if admin and admin.get("id") == user_id and not body.is_active:
