@@ -4,9 +4,9 @@ interface ValidationResult {
   normalized: string;
 }
 
-// Market selector for the analyze input. The user must pick a market; the
-// chosen market always drives how the code is interpreted (no auto-detect).
-export type Market = 'cn' | 'hk' | 'us';
+// Market selector for the analyze input. 'auto' keeps the raw code as typed
+// (no forced interpretation); the others drive how the code is handled.
+export type Market = 'auto' | 'cn' | 'hk' | 'us';
 
 /**
  * Apply the selected market to a raw stock code.
