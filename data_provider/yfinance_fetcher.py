@@ -186,6 +186,27 @@ class YfinanceFetcher(BaseFetcher):
             logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
             return f"{code}.SZ"
 
+    def get_stock_name(self, stock_code: str) -> Optional[str]:
+        """Resolve a company name via Yahoo Finance (works for HK / US / A-share).
+
+        The HK realtime source (akshare/eastmoney) is flaky, and no other fetcher
+        can name an HK stock when it's down — so HK names fell through to "" and
+        the UI showed "Unknown". Yahoo Finance has the name (e.g. 01888.HK ->
+        "Kingboard Laminates Holdings Limited"), so expose it as a name source.
+        Best-effort: returns None on any failure so the manager keeps degrading.
+        """
+        import yfinance as yf
+
+        try:
+            symbol = self._convert_stock_code(stock_code)
+            info = yf.Ticker(symbol).info or {}
+            name = (info.get("shortName") or info.get("longName") or "").strip()
+            if is_meaningful_stock_name(name, stock_code):
+                return name
+        except Exception as e:  # pragma: no cover - network/parse best-effort
+            logger.debug(f"[Yfinance] get_stock_name 失败 {stock_code}: {e}")
+        return None
+
     @retry(
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=2, max=30),
