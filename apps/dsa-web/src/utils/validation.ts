@@ -4,11 +4,12 @@ interface ValidationResult {
   normalized: string;
 }
 
-// Market selector for the analyze input. 'auto' keeps the raw code as typed.
-export type Market = 'auto' | 'cn' | 'hk' | 'us';
+// Market selector for the analyze input. The user must pick a market; the
+// chosen market always drives how the code is interpreted (no auto-detect).
+export type Market = 'cn' | 'hk' | 'us';
 
 /**
- * Apply a market hint to a raw stock code.
+ * Apply the selected market to a raw stock code.
  *
  * Only HK needs help: a bare 5-digit code (e.g. "00700") is ambiguous with an
  * A-share code downstream, so when the user picks 港股 we append ".HK" to make

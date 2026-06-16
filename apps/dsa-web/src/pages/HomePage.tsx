@@ -28,7 +28,7 @@ const HomePage: React.FC = () => {
 
   // Input state
   const [stockCode, setStockCode] = useState('');
-  const [market, setMarket] = useState<Market>('auto');
+  const [market, setMarket] = useState<Market>('cn');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [inputError, setInputError] = useState<string>();
 
@@ -430,10 +430,9 @@ const HomePage: React.FC = () => {
             value={market}
             onChange={(e) => setMarket(e.target.value as Market)}
             disabled={isAnalyzing}
-            title="选择市场（选「港股」会自动为代码补上 .HK）"
+            title="选择市场（必选；选「港股」会自动为代码补上 .HK）"
             className="input-terminal w-auto flex-shrink-0 cursor-pointer pr-7"
           >
-            <option value="auto">自动</option>
             <option value="cn">A股</option>
             <option value="hk">港股</option>
             <option value="us">美股</option>
@@ -450,7 +449,9 @@ const HomePage: React.FC = () => {
               placeholder={
                 market === 'hk'
                   ? '输入港股代码，如 00700（自动补 .HK）'
-                  : '输入股票代码，如 600519、00700、AAPL'
+                  : market === 'us'
+                    ? '输入美股代码，如 AAPL'
+                    : '输入 A 股代码，如 600519'
               }
               disabled={isAnalyzing}
               className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
