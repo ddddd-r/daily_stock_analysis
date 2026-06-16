@@ -6,7 +6,7 @@ import { getParsedApiError } from '../api/error';
 import type { HistoryItem, AnalysisReport, TaskInfo } from '../types/analysis';
 import { historyApi } from '../api/history';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
-import { validateStockCode } from '../utils/validation';
+import { validateStockCode, applyMarketSuffix, type Market } from '../utils/validation';
 import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
 import { useAnalysisStore } from '../stores/analysisStore';
 import { ReportSummary, ReportMarkdown } from '../components/report';
@@ -28,6 +28,7 @@ const HomePage: React.FC = () => {
 
   // Input state
   const [stockCode, setStockCode] = useState('');
+  const [market, setMarket] = useState<Market>('hk');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [inputError, setInputError] = useState<string>();
 
@@ -326,7 +327,9 @@ const HomePage: React.FC = () => {
 
   // Analyze stock (async mode)
   const handleAnalyze = async () => {
-    const { valid, message, normalized } = validateStockCode(stockCode);
+    // Apply the selected market (港股 -> append .HK) before validating.
+    const effectiveCode = applyMarketSuffix(stockCode, market);
+    const { valid, message, normalized } = validateStockCode(effectiveCode);
     if (!valid) {
       setInputError(message);
       return;
@@ -423,6 +426,18 @@ const HomePage: React.FC = () => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
             </svg>
           </button>
+          <select
+            value={market}
+            onChange={(e) => setMarket(e.target.value as Market)}
+            disabled={isAnalyzing}
+            title="选择市场（选「港股」会自动为代码补上 .HK；「自动」按输入原样识别）"
+            className="input-terminal w-auto flex-shrink-0 cursor-pointer pr-7"
+          >
+            <option value="hk">港股</option>
+            <option value="cn">A股</option>
+            <option value="us">美股</option>
+            <option value="auto">自动</option>
+          </select>
           <div className="flex-1 relative min-w-0">
             <input
               type="text"
@@ -432,7 +447,15 @@ const HomePage: React.FC = () => {
                 setInputError(undefined);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="输入股票代码，如 600519、00700、AAPL"
+              placeholder={
+                market === 'hk'
+                  ? '输入港股代码，如 00700（自动补 .HK）'
+                  : market === 'us'
+                    ? '输入美股代码，如 AAPL'
+                    : market === 'cn'
+                      ? '输入 A 股代码，如 600519'
+                      : '输入股票代码，如 600519、00700、AAPL'
+              }
               disabled={isAnalyzing}
               className={`input-terminal w-full ${inputError ? 'border-danger/50' : ''}`}
             />

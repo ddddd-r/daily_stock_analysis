@@ -4,6 +4,27 @@ interface ValidationResult {
   normalized: string;
 }
 
+// Market selector for the analyze input. 'auto' keeps the raw code as typed
+// (no forced interpretation); the others drive how the code is handled.
+export type Market = 'auto' | 'cn' | 'hk' | 'us';
+
+/**
+ * Apply the selected market to a raw stock code.
+ *
+ * Only HK needs help: a bare 5-digit code (e.g. "00700") is ambiguous with an
+ * A-share code downstream, so when the user picks 港股 we append ".HK" to make
+ * it unambiguous. A-share / US codes need no suffix. Already-qualified HK codes
+ * (HK-prefixed or .HK-suffixed) are left untouched.
+ */
+export const applyMarketSuffix = (value: string, market: Market): string => {
+  const c = value.trim().toUpperCase();
+  if (!c) return c;
+  if (market === 'hk' && !c.endsWith('.HK') && !c.startsWith('HK')) {
+    return `${c}.HK`;
+  }
+  return c;
+};
+
 // 兼容 A/H/美股常见代码格式的基础校验
 export const validateStockCode = (value: string): ValidationResult => {
   const normalized = value.trim().toUpperCase();
