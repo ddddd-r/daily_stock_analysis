@@ -81,6 +81,17 @@ def get_current_user_id(request: Request) -> Optional[str]:
     return getattr(request.state, "user_id", None)
 
 
+def current_user_id(request: Request) -> str:
+    """Return the owner id to scope data by, with a single-tenant fallback.
+
+    Returns the authenticated user id when present (auth enabled + logged in),
+    otherwise :data:`src.storage.DEFAULT_USER_ID` so single-tenant / auth-off
+    deployments keep seeing their data.
+    """
+    from src.storage import DEFAULT_USER_ID
+    return getattr(request.state, "user_id", None) or DEFAULT_USER_ID
+
+
 def require_admin(request: Request):
     """FastAPI dependency that requires the current user to be an active admin.
 

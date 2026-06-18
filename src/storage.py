@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 # SQLAlchemy ORM 基类
 Base = declarative_base()
 
+# Owner id used for rows that have no authenticated user — i.e. when admin auth
+# is disabled (single-tenant) or for legacy rows created before multi-user
+# isolation existed. Per-user scoping falls back to this so the single-tenant
+# experience is unchanged.
+DEFAULT_USER_ID = "default"
+
 if TYPE_CHECKING:
     from src.search_service import SearchResponse
 
@@ -599,6 +605,7 @@ class ConversationMessage(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String(100), index=True, nullable=False)
+    user_id = Column(String(64), index=True, nullable=True)  # owner; DEFAULT_USER_ID when unauthenticated
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, index=True)
@@ -707,13 +714,45 @@ class DatabaseManager:
         
         # 创建所有表
         Base.metadata.create_all(self._engine)
+        # 轻量迁移：为既有数据库补充多用户隔离所需的列
+        self._migrate_user_id_columns()
 
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
 
         # 注册退出钩子，确保程序退出时关闭数据库连接
         atexit.register(DatabaseManager._cleanup_engine, self._engine)
-    
+
+    def _migrate_user_id_columns(self) -> None:
+        """Add user_id columns to pre-existing tables and backfill defaults.
+
+        ``create_all`` does not ALTER existing tables, so databases created
+        before multi-user isolation need the ``user_id`` columns added and old
+        rows assigned to :data:`DEFAULT_USER_ID`. Idempotent and SQLite-safe.
+        """
+        from sqlalchemy import text
+
+        # table -> column that should default to DEFAULT_USER_ID when NULL.
+        # Scoped to conversations for now; analysis history / portfolio land in
+        # the next isolation PR.
+        targets = {
+            "conversation_messages": "user_id",
+        }
+        try:
+            with self._engine.begin() as conn:
+                for table, column in targets.items():
+                    cols = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+                    if not cols:
+                        continue  # table doesn't exist yet (fresh create handled it)
+                    if column not in cols:
+                        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} VARCHAR(64)"))
+                    conn.execute(
+                        text(f"UPDATE {table} SET {column} = :uid WHERE {column} IS NULL"),
+                        {"uid": DEFAULT_USER_ID},
+                    )
+        except Exception as exc:  # pragma: no cover - defensive, non-fatal
+            logger.warning("user_id column migration skipped/failed: %s", exc)
+
     @classmethod
     def get_instance(cls) -> 'DatabaseManager':
         """获取单例实例"""
@@ -1807,13 +1846,16 @@ class DatabaseManager:
         digest = hashlib.md5(raw_key.encode("utf-8")).hexdigest()
         return f"no-url:{code}:{digest}"
 
-    def save_conversation_message(self, session_id: str, role: str, content: str) -> None:
+    def save_conversation_message(
+        self, session_id: str, role: str, content: str, user_id: str = DEFAULT_USER_ID
+    ) -> None:
         """
         保存 Agent 对话消息
         """
         with self.session_scope() as session:
             msg = ConversationMessage(
                 session_id=session_id,
+                user_id=user_id or DEFAULT_USER_ID,
                 role=role,
                 content=content
             )
@@ -1847,6 +1889,7 @@ class DatabaseManager:
         limit: int = 50,
         session_prefix: Optional[str] = None,
         extra_session_ids: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         获取聊天会话列表（从 conversation_messages 聚合）
@@ -1886,6 +1929,9 @@ class DatabaseManager:
                 conditions.append(ConversationMessage.session_id.in_(exact_ids))
             if conditions:
                 base = base.where(or_(*conditions))
+            # Per-user isolation: only this user's sessions.
+            if user_id is not None:
+                base = base.where(ConversationMessage.user_id == user_id)
             stmt = (
                 base
                 .group_by(ConversationMessage.session_id)
@@ -1920,14 +1966,22 @@ class DatabaseManager:
                 })
             return results
 
-    def get_conversation_messages(self, session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_conversation_messages(
+        self, session_id: str, limit: int = 100, user_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         获取单个会话的完整消息列表（用于前端恢复历史）
+
+        When ``user_id`` is provided, returns an empty list unless the session
+        belongs to that user (ownership enforcement).
         """
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            if user_id is not None:
+                conditions.append(ConversationMessage.user_id == user_id)
             stmt = (
                 select(ConversationMessage)
-                .where(ConversationMessage.session_id == session_id)
+                .where(and_(*conditions))
                 .order_by(ConversationMessage.created_at)
                 .limit(limit)
             )
@@ -1942,18 +1996,22 @@ class DatabaseManager:
                 for msg in messages
             ]
 
-    def delete_conversation_session(self, session_id: str) -> int:
+    def delete_conversation_session(self, session_id: str, user_id: Optional[str] = None) -> int:
         """
         删除指定会话的所有消息
+
+        When ``user_id`` is provided, only deletes if the session belongs to
+        that user (ownership enforcement).
 
         Returns:
             删除的消息数
         """
         with self.session_scope() as session:
+            conditions = [ConversationMessage.session_id == session_id]
+            if user_id is not None:
+                conditions.append(ConversationMessage.user_id == user_id)
             result = session.execute(
-                delete(ConversationMessage).where(
-                    ConversationMessage.session_id == session_id
-                )
+                delete(ConversationMessage).where(and_(*conditions))
             )
             return result.rowcount
 
